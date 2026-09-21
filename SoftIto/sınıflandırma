@@ -1,0 +1,159 @@
+# 1 - Kütüphaneler ve ayarlar
+import random
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+from sklearn.model_selection import train_test_split, StratifiedKFold, cross_val_score, GridSearchCV
+from sklearn.preprocessing import StandardScaler
+from sklearn.pipeline import make_pipeline
+from sklearn.linear_model import LogisticRegression
+from sklearn.neighbors import KNeighborsClassifier
+from sklearn.tree import DecisionTreeClassifier
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.dummy import DummyClassifier
+from sklearn.metrics import accuracy_score, ConfusionMatrixDisplay, classification_report, roc_curve, roc_auc_score
+
+SEED = 42
+random.seed(SEED)
+np.random.seed(SEED)
+
+sns.set_theme(style="whitegrid", context="notebook")
+plt.rcParams["figure.figsize"] = (7, 4)
+plt.rcParams["figure.dpi"] = 110
+
+
+# 2 - Dosyayı oku
+df = pd.read_csv("/content/data_banknote_authentication.txt", header=None)
+df.columns = ["varyans", "carpiklik", "basiklik", "entropi", "sinif"]
+
+display(df.head())
+
+print("Veri boyutu:", df.shape)
+print("\nEksik veriler:")
+print(df.isnull().sum())
+
+
+# 3 - Özellikleri ve hedefi ayır
+X_clf = df.drop("sinif", axis=1)
+y_clf = df["sinif"]
+
+print("\nSınıf dağılımı:")
+print(y_clf.value_counts())
+
+display(X_clf.describe().T.round(2))
+
+
+# 4 - Eğitim ve test kümelerine ayır
+Xc_train, Xc_test, yc_train, yc_test = train_test_split(
+    X_clf, y_clf, test_size=0.20, random_state=SEED, stratify=y_clf
+)
+
+print("\nEğitim:", Xc_train.shape)
+print("Test:", Xc_test.shape)
+
+
+# 5 - Modelleri oluşturma ve karşılaştırma
+siniflandiricilar = {
+    "Baseline": DummyClassifier(strategy="most_frequent"),
+    "Logistic": make_pipeline(StandardScaler(), LogisticRegression(max_iter=1000)),
+    "KNN": make_pipeline(StandardScaler(), KNeighborsClassifier()),
+    "Karar ağacı": DecisionTreeClassifier(random_state=SEED),
+    "Rastgele orman": RandomForestClassifier(random_state=SEED)
+}
+
+satirlar = []
+
+for ad, m in siniflandiricilar.items():
+    m.fit(Xc_train, yc_train)
+
+    satirlar.append({
+        "Model": ad,
+        "Eğitim": accuracy_score(yc_train, m.predict(Xc_train)),
+        "Test": accuracy_score(yc_test, m.predict(Xc_test))
+    })
+
+print("\nModel karşılaştırması:")
+display(pd.DataFrame(satirlar).set_index("Model").round(3))
+
+
+# 6 - Karışıklık matrisi ve ROC eğrileri
+model = siniflandiricilar["Logistic"]
+tahmin = model.predict(Xc_test)
+
+fig, axes = plt.subplots(1, 2, figsize=(12, 4))
+
+ConfusionMatrixDisplay.from_predictions(
+    yc_test, tahmin,
+    display_labels=["Sınıf 0", "Sınıf 1"],
+    cmap="YlGn", ax=axes[0], colorbar=False
+)
+
+axes[0].set_title("Lojistik regresyon — Karışıklık matrisi")
+axes[0].grid(False)
+
+for ad in ["Logistic", "KNN", "Karar ağacı", "Rastgele orman"]:
+    p = siniflandiricilar[ad].predict_proba(Xc_test)[:, 1]
+    fpr, tpr, _ = roc_curve(yc_test, p)
+
+    axes[1].plot(
+        fpr, tpr,
+        label=f"{ad} AUC: {roc_auc_score(yc_test, p):.3f}"
+    )
+
+axes[1].plot([0, 1], [0, 1], "--", color="gray")
+axes[1].set_xlabel("Yanlış pozitif oranı")
+axes[1].set_ylabel("Doğru pozitif oranı")
+axes[1].set_title("ROC eğrisi — Pozitif sınıf: 1")
+axes[1].legend(fontsize=8)
+
+plt.tight_layout()
+plt.show()
+
+print("\nLojistik regresyon sınıflandırma raporu:")
+print(classification_report(yc_test, tahmin, zero_division=0))
+
+
+# 7 - Cross-validation
+cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=SEED)
+
+satirlar = []
+
+for ad, m in siniflandiricilar.items():
+    skorlar = cross_val_score(
+        m, Xc_train, yc_train, cv=cv, scoring="accuracy"
+    )
+
+    satirlar.append({
+        "Model": ad,
+        "Ortalama skor": skorlar.mean(),
+        "Standart sapma": skorlar.std()
+    })
+
+cv_sonuc = (
+    pd.DataFrame(satirlar)
+    .set_index("Model")
+    .sort_values("Ortalama skor", ascending=False)
+    .round(3)
+)
+
+print("\nCross-validation sonuçları:")
+display(cv_sonuc)
+
+
+# 8 - GridSearchCV ile lojistik regresyon parametresi seçme
+pipe = make_pipeline(StandardScaler(), LogisticRegression(max_iter=1000))
+
+param_grid = {
+    "logisticregression__C": [0.01, 0.1, 1, 10, 100]
+}
+
+opt = GridSearchCV(pipe, param_grid, cv=cv, scoring="accuracy", n_jobs=-1)
+opt.fit(Xc_train, yc_train)
+
+print("\nEn iyi parametre:", opt.best_params_)
+print(f"En iyi CV skoru: {opt.best_score_:.3f}")
+
+tahmin = opt.predict(Xc_test)
+print(f"Seçilen modelin test doğruluğu: {accuracy_score(yc_test, tahmin):.3f}")
